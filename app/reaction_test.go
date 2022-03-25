@@ -14,6 +14,7 @@ import (
 )
 
 func TestSharedChannelSyncForReactionActions(t *testing.T) {
+	t.Skip("Investigate")
 	t.Run("adding a reaction in a shared channel performs a content sync when sync service is running on that node", func(t *testing.T) {
 		th := Setup(t).InitBasic()
 
