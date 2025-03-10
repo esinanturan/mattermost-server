@@ -234,13 +234,19 @@ const (
 	PluginSettingsDefaultMarketplaceURL    = "https://api.integrations.mattermost.com"
 	PluginSettingsOldMarketplaceURL        = "https://marketplace.integrations.mattermost.com"
 
-	ComplianceExportTypeCsv            = "csv"
-	ComplianceExportTypeActiance       = "actiance"
-	ComplianceExportTypeGlobalrelay    = "globalrelay"
-	ComplianceExportTypeGlobalrelayZip = "globalrelay-zip"
-	GlobalrelayCustomerTypeA9          = "A9"
-	GlobalrelayCustomerTypeA10         = "A10"
-	GlobalrelayCustomerTypeCustom      = "CUSTOM"
+	ComplianceExportDirectoryFormat                = "compliance-export-2006-01-02-15h04m"
+	ComplianceExportPath                           = "export"
+	ComplianceExportPathCLI                        = "cli"
+	ComplianceExportTypeCsv                        = "csv"
+	ComplianceExportTypeActiance                   = "actiance"
+	ComplianceExportTypeGlobalrelay                = "globalrelay"
+	ComplianceExportTypeGlobalrelayZip             = "globalrelay-zip"
+	ComplianceExportChannelBatchSizeDefault        = 100
+	ComplianceExportChannelHistoryBatchSizeDefault = 10
+
+	GlobalrelayCustomerTypeA9     = "A9"
+	GlobalrelayCustomerTypeA10    = "A10"
+	GlobalrelayCustomerTypeCustom = "CUSTOM"
 
 	ClientSideCertCheckPrimaryAuth   = "primary"
 	ClientSideCertCheckSecondaryAuth = "secondary"
@@ -350,7 +356,6 @@ type ServiceSettings struct {
 	EnableDeveloper                     *bool    `access:"environment_developer,write_restrictable,cloud_restrictable"`
 	DeveloperFlags                      *string  `access:"environment_developer,cloud_restrictable"`
 	EnableClientPerformanceDebugging    *bool    `access:"environment_developer,write_restrictable,cloud_restrictable"`
-	EnableOpenTracing                   *bool    `access:"write_restrictable,cloud_restrictable"`
 	EnableSecurityFixAlert              *bool    `access:"environment_smtp,write_restrictable,cloud_restrictable"`
 	EnableInsecureOutgoingConnections   *bool    `access:"environment_web_server,write_restrictable,cloud_restrictable"`
 	AllowedUntrustedInternalConnections *string  `access:"environment_web_server,write_restrictable,cloud_restrictable"`
@@ -434,6 +439,8 @@ type ServiceSettings struct {
 	MaximumPayloadSizeBytes                           *int64  `access:"environment_file_storage,write_restrictable,cloud_restrictable"`
 	MaximumURLLength                                  *int    `access:"environment_file_storage,write_restrictable,cloud_restrictable"`
 	ScheduledPosts                                    *bool   `access:"site_posts"`
+	EnableWebHubChannelIteration                      *bool   `access:"write_restrictable,cloud_restrictable"` // telemetry: none
+	FrameAncestors                                    *string `access:"write_restrictable,cloud_restrictable"` // telemetry: none
 }
 
 var MattermostGiphySdkKey string
@@ -494,10 +501,6 @@ func (s *ServiceSettings) SetDefaults(isUpdate bool) {
 
 	if s.EnableClientPerformanceDebugging == nil {
 		s.EnableClientPerformanceDebugging = NewPointer(false)
-	}
-
-	if s.EnableOpenTracing == nil {
-		s.EnableOpenTracing = NewPointer(false)
 	}
 
 	if s.EnableSecurityFixAlert == nil {
@@ -961,6 +964,14 @@ func (s *ServiceSettings) SetDefaults(isUpdate bool) {
 	if s.ScheduledPosts == nil {
 		s.ScheduledPosts = NewPointer(true)
 	}
+
+	if s.EnableWebHubChannelIteration == nil {
+		s.EnableWebHubChannelIteration = NewPointer(false)
+	}
+
+	if s.FrameAncestors == nil {
+		s.FrameAncestors = NewPointer("")
+	}
 }
 
 type CacheSettings struct {
@@ -968,6 +979,7 @@ type CacheSettings struct {
 	RedisAddress       *string `access:",write_restrictable,cloud_restrictable"` // telemetry: none
 	RedisPassword      *string `access:",write_restrictable,cloud_restrictable"` // telemetry: none
 	RedisDB            *int    `access:",write_restrictable,cloud_restrictable"` // telemetry: none
+	RedisCachePrefix   *string `access:",write_restrictable,cloud_restrictable"` // telemetry: none
 	DisableClientCache *bool   `access:",write_restrictable,cloud_restrictable"` // telemetry: none
 }
 
@@ -986,6 +998,10 @@ func (s *CacheSettings) SetDefaults() {
 
 	if s.RedisDB == nil {
 		s.RedisDB = NewPointer(-1)
+	}
+
+	if s.RedisCachePrefix == nil {
+		s.RedisCachePrefix = NewPointer("")
 	}
 
 	if s.DisableClientCache == nil {
@@ -1070,11 +1086,12 @@ func (s *ClusterSettings) SetDefaults() {
 }
 
 type MetricsSettings struct {
-	Enable                    *bool   `access:"environment_performance_monitoring,write_restrictable,cloud_restrictable"`
-	BlockProfileRate          *int    `access:"environment_performance_monitoring,write_restrictable,cloud_restrictable"`
-	ListenAddress             *string `access:"environment_performance_monitoring,write_restrictable,cloud_restrictable"` // telemetry: none
-	EnableClientMetrics       *bool   `access:"environment_performance_monitoring,write_restrictable,cloud_restrictable"`
-	EnableNotificationMetrics *bool   `access:"environment_performance_monitoring,write_restrictable,cloud_restrictable"`
+	Enable                    *bool    `access:"environment_performance_monitoring,write_restrictable,cloud_restrictable"`
+	BlockProfileRate          *int     `access:"environment_performance_monitoring,write_restrictable,cloud_restrictable"`
+	ListenAddress             *string  `access:"environment_performance_monitoring,write_restrictable,cloud_restrictable"` // telemetry: none
+	EnableClientMetrics       *bool    `access:"environment_performance_monitoring,write_restrictable,cloud_restrictable"`
+	EnableNotificationMetrics *bool    `access:"environment_performance_monitoring,write_restrictable,cloud_restrictable"`
+	ClientSideUserIds         []string `access:"environment_performance_monitoring,write_restrictable,cloud_restrictable"` // telemetry: none
 }
 
 func (s *MetricsSettings) SetDefaults() {
@@ -1097,13 +1114,30 @@ func (s *MetricsSettings) SetDefaults() {
 	if s.EnableNotificationMetrics == nil {
 		s.EnableNotificationMetrics = NewPointer(true)
 	}
+
+	if s.ClientSideUserIds == nil {
+		s.ClientSideUserIds = []string{}
+	}
+}
+
+func (s *MetricsSettings) isValid() *AppError {
+	const maxLength = 5
+	if len(s.ClientSideUserIds) > maxLength {
+		return NewAppError("MetricsSettings.IsValid", "model.config.is_valid.metrics_client_side_user_ids.app_error", map[string]any{"MaxLength": maxLength, "CurrentLength": len(s.ClientSideUserIds)}, "", http.StatusBadRequest)
+	}
+	for _, id := range s.ClientSideUserIds {
+		if !IsValidId(id) {
+			return NewAppError("MetricsSettings.IsValid", "model.config.is_valid.metrics_client_side_user_id.app_error", map[string]any{"Id": id}, "", http.StatusBadRequest)
+		}
+	}
+	return nil
 }
 
 type ExperimentalSettings struct {
 	ClientSideCertEnable                                  *bool   `access:"experimental_features,cloud_restrictable"`
 	ClientSideCertCheck                                   *string `access:"experimental_features,cloud_restrictable"`
 	LinkMetadataTimeoutMilliseconds                       *int64  `access:"experimental_features,write_restrictable,cloud_restrictable"`
-	RestrictSystemAdmin                                   *bool   `access:"experimental_features,write_restrictable"`
+	RestrictSystemAdmin                                   *bool   `access:"*_read,write_restrictable"`
 	EnableSharedChannels                                  *bool   `access:"experimental_features"` // Deprecated: use `ConnectedWorkspacesSettings.EnableSharedChannels`
 	EnableRemoteClusterService                            *bool   `access:"experimental_features"` // Deprecated: use `ConnectedWorkspacesSettings.EnableRemoteClusterService`
 	DisableAppBar                                         *bool   `access:"experimental_features"`
@@ -3403,12 +3437,14 @@ func (s *GlobalRelayMessageExportSettings) SetDefaults() {
 }
 
 type MessageExportSettings struct {
-	EnableExport          *bool   `access:"compliance_compliance_export"`
-	ExportFormat          *string `access:"compliance_compliance_export"`
-	DailyRunTime          *string `access:"compliance_compliance_export"`
-	ExportFromTimestamp   *int64  `access:"compliance_compliance_export"`
-	BatchSize             *int    `access:"compliance_compliance_export"`
-	DownloadExportResults *bool   `access:"compliance_compliance_export"`
+	EnableExport            *bool   `access:"compliance_compliance_export"`
+	ExportFormat            *string `access:"compliance_compliance_export"`
+	DailyRunTime            *string `access:"compliance_compliance_export"`
+	ExportFromTimestamp     *int64  `access:"compliance_compliance_export"`
+	BatchSize               *int    `access:"compliance_compliance_export"`
+	DownloadExportResults   *bool   `access:"compliance_compliance_export"`
+	ChannelBatchSize        *int    `access:"compliance_compliance_export"`
+	ChannelHistoryBatchSize *int    `access:"compliance_compliance_export"`
 
 	// formatter-specific settings - these are only expected to be non-nil if ExportFormat is set to the associated format
 	GlobalRelaySettings *GlobalRelayMessageExportSettings `access:"compliance_compliance_export"`
@@ -3437,6 +3473,14 @@ func (s *MessageExportSettings) SetDefaults() {
 
 	if s.BatchSize == nil {
 		s.BatchSize = NewPointer(10000)
+	}
+
+	if s.ChannelBatchSize == nil || *s.ChannelBatchSize == 0 {
+		s.ChannelBatchSize = NewPointer(ComplianceExportChannelBatchSizeDefault)
+	}
+
+	if s.ChannelHistoryBatchSize == nil || *s.ChannelHistoryBatchSize == 0 {
+		s.ChannelHistoryBatchSize = NewPointer(ComplianceExportChannelHistoryBatchSizeDefault)
 	}
 
 	if s.GlobalRelaySettings == nil {
@@ -3793,6 +3837,10 @@ func (o *Config) IsValid() *AppError {
 
 	if *o.ClusterSettings.Enable && *o.EmailSettings.EnableEmailBatching {
 		return NewAppError("Config.IsValid", "model.config.is_valid.cluster_email_batching.app_error", nil, "", http.StatusBadRequest)
+	}
+
+	if appErr := o.MetricsSettings.isValid(); appErr != nil {
+		return appErr
 	}
 
 	if appErr := o.CacheSettings.isValid(); appErr != nil {
@@ -4300,11 +4348,17 @@ func (s *ElasticsearchSettings) isValid() *AppError {
 	}
 
 	if *s.EnableSearching && !*s.EnableIndexing {
-		return NewAppError("Config.IsValid", "model.config.is_valid.elastic_search.enable_searching.app_error", nil, "", http.StatusBadRequest)
+		return NewAppError("Config.IsValid", "model.config.is_valid.elastic_search.enable_searching.app_error", map[string]any{
+			"Searching":      "ElasticsearchSettings.EnableSearching",
+			"EnableIndexing": "ElasticsearchSettings.EnableIndexing",
+		}, "", http.StatusBadRequest)
 	}
 
 	if *s.EnableAutocomplete && !*s.EnableIndexing {
-		return NewAppError("Config.IsValid", "model.config.is_valid.elastic_search.enable_autocomplete.app_error", nil, "", http.StatusBadRequest)
+		return NewAppError("Config.IsValid", "model.config.is_valid.elastic_search.enable_autocomplete.app_error", map[string]any{
+			"Autocomplete":   "ElasticsearchSettings.EnableAutocomplete",
+			"EnableIndexing": "ElasticsearchSettings.EnableIndexing",
+		}, "", http.StatusBadRequest)
 	}
 
 	if *s.AggregatePostsAfterDays < 1 {
@@ -4428,7 +4482,7 @@ func (s *MessageExportSettings) isValid() *AppError {
 			return NewAppError("Config.IsValid", "model.config.is_valid.message_export.daily_runtime.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 		} else if s.BatchSize == nil || *s.BatchSize < 0 {
 			return NewAppError("Config.IsValid", "model.config.is_valid.message_export.batch_size.app_error", nil, "", http.StatusBadRequest)
-		} else if s.ExportFormat == nil || (*s.ExportFormat != ComplianceExportTypeActiance && *s.ExportFormat != ComplianceExportTypeGlobalrelay && *s.ExportFormat != ComplianceExportTypeCsv) {
+		} else if s.ExportFormat == nil || (*s.ExportFormat != ComplianceExportTypeActiance && *s.ExportFormat != ComplianceExportTypeGlobalrelay && *s.ExportFormat != ComplianceExportTypeCsv && *s.ExportFormat != ComplianceExportTypeGlobalrelayZip) {
 			return NewAppError("Config.IsValid", "model.config.is_valid.message_export.export_type.app_error", nil, "", http.StatusBadRequest)
 		}
 

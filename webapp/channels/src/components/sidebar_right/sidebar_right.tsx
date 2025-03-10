@@ -13,6 +13,7 @@ import {trackEvent} from 'actions/telemetry_actions.jsx';
 import ChannelInfoRhs from 'components/channel_info_rhs';
 import ChannelMembersRhs from 'components/channel_members_rhs';
 import FileUploadOverlay from 'components/file_upload_overlay';
+import {DropOverlayIdRHS} from 'components/file_upload_overlay/file_upload_overlay';
 import LoadingScreen from 'components/loading_screen';
 import PostEditHistory from 'components/post_edit_history';
 import ResizableRhs from 'components/resizable_sidebar/resizable_rhs';
@@ -21,8 +22,9 @@ import RhsThread from 'components/rhs_thread';
 import Search from 'components/search/index';
 
 import RhsPlugin from 'plugins/rhs_plugin';
-import type {A11yFocusEventDetail} from 'utils/constants';
-import Constants, {A11yCustomEventTypes} from 'utils/constants';
+import a11yController from 'utils/a11y_controller_instance';
+import {focusElement} from 'utils/a11y_utils';
+import Constants from 'utils/constants';
 import {cmdOrCtrlPressed, isKeyPressed} from 'utils/keyboard';
 import {isMac} from 'utils/user_agent';
 
@@ -50,6 +52,8 @@ export type Props = {
     selectedPostCardId: string;
     isSavedPosts?: boolean;
     isRecentMentions?: boolean;
+    ariaLabel?: string;
+    ariaLabeledby?: string;
     actions: {
         setRhsExpanded: (expanded: boolean) => void;
         showPinnedPosts: (channelId: string) => void;
@@ -155,34 +159,25 @@ export default class SidebarRight extends React.PureComponent<Props, State> {
 
         if (this.props.isOpen && (contentChanged || (!wasOpen && isOpen))) {
             this.previousActiveElement = document.activeElement as HTMLElement;
-            requestAnimationFrame(() => {
+
+            // Focus the sidebar after a tick
+            setTimeout(() => {
                 if (this.sidebarRight.current) {
-                    document.dispatchEvent(
-                        new CustomEvent<A11yFocusEventDetail>(A11yCustomEventTypes.FOCUS, {
-                            detail: {
-                                target: this.sidebarRight.current,
-                                keyboardOnly: false,
-                            },
-                        }),
-                    );
+                    focusElement(this.sidebarRight, false);
                 }
-            });
+            }, 0);
         } else if (!this.props.isOpen && wasOpen) {
             // RHS just was closed, restore focus to the previous element had it
-            // this will have to change for upcoming work specially for search and probalby plugins
-            requestAnimationFrame(() => {
-                if (this.previousActiveElement) {
-                    document.dispatchEvent(
-                        new CustomEvent<A11yFocusEventDetail>(A11yCustomEventTypes.FOCUS, {
-                            detail: {
-                                target: this.previousActiveElement,
-                                keyboardOnly: false,
-                            },
-                        }),
-                    );
-                    this.previousActiveElement = null;
-                }
-            });
+            if (a11yController.originElement) {
+                a11yController.restoreOriginFocus();
+            } else {
+                setTimeout(() => {
+                    if (this.previousActiveElement) {
+                        focusElement(this.previousActiveElement, false);
+                        this.previousActiveElement = null;
+                    }
+                }, 0);
+            }
         }
     }
 
@@ -288,7 +283,10 @@ export default class SidebarRight extends React.PureComponent<Props, State> {
             selectedChannelNeeded = true;
             content = (
                 <div className='post-right__container'>
-                    <FileUploadOverlay overlayType='right'/>
+                    <FileUploadOverlay
+                        overlayType='right'
+                        id={DropOverlayIdRHS}
+                    />
                     <RhsThread previousRhsState={previousRhsState}/>
                 </div>
             );
@@ -328,8 +326,10 @@ export default class SidebarRight extends React.PureComponent<Props, State> {
                 <ResizableRhs
                     className={containerClassName}
                     id='sidebar-right'
-                    role='complementary'
+                    role='region'
                     rightWidthHolderRef={this.sidebarRightWidthHolder}
+                    ariaLabel={this.props.ariaLabel}
+                    ariaLabeledby={this.props.ariaLabeledby}
                 >
                     <div
                         tabIndex={-1}
